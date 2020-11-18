@@ -20,6 +20,7 @@ import h5py
 import re
 
 import cv2
+import pyrealsense2 as rs
 import numpy as np
 
 from modules.input_reader import InputReader
@@ -50,20 +51,24 @@ class HumanPoseEstimation3d(InferenceManager):
         self.output_dir_path = args.output_dir
         self.save_results = self.create_output_file()
         self.i_frame = 0
-        self.frame_provider = InputReader(args.input)
         self.base_height = args.height_size
         self.fx = args.fx
         self.stride = 8
-
+        self.pipeline = rs.pipeline()
+        self.config = rs.config()
+        self.config.enable_stream(rs.stream.color, 1920, 1080, rs.format.bgr8, 30)
         self.presenter = monitors.Presenter(args.utilization_monitors, 0)
         self.running = False
 
     def run(self):
         self.start()
         self.perf_monitor.start()
+
+        self.pipeline.start(self.config)
         self.running = True
-        for frame in self.frame_provider:
-            current_time = cv2.getTickCount()
+        while True:
+            frames = self.pipeline.wait_for_frames()
+            frame = np.asanyarray(frames.get_color_frame().get_data())
             input_scale = self.base_height / frame.shape[0]
             scaled_img = cv2.resize(frame, dsize=None, fx=input_scale, fy=input_scale)
             if self.fx < 0:  # Focal length is unknown
@@ -112,7 +117,7 @@ class HumanPoseEstimation3d(InferenceManager):
         result = (outputs['features'][0], outputs['heatmaps'][0], outputs['pafs'][0])
         frame = input['original_frame']
         input_scale = self.base_height / frame.shape[0]
-        poses_3d, poses_2d = parse_poses(result, input_scale, self.stride, self.fx, self.frame_provider.is_video)
+        poses_3d, poses_2d = parse_poses(result, input_scale, self.stride, self.fx, 1)
         if self.save_results and len(poses_3d) > 0:
             self.f_res.require_group("3d_coords/x").create_dataset(str(self.i_frame), data=poses_3d[:, 0::4])
             self.f_res.require_group("3d_coords/y").create_dataset(str(self.i_frame), data=poses_3d[:, 1::4])
