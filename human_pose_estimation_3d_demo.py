@@ -34,7 +34,7 @@ import monitors
 class HumanPoseEstimation3d(InferenceManager):
     def __init__(self, args):
         self.perf_monitor = PerfMonitor(sinks=[self.displayCallback])
-        InferenceManager.__init__(self, args.model, args.device, 6, 0, sinks=[self.perf_monitor])
+        InferenceManager.__init__(self, args.model, args.device, 0, 0, sinks=[self.perf_monitor])
         #self.canvas_3d = np.zeros((200, 300, 3), dtype=np.uint8)
         self.canvas_3d = np.zeros((720, 1280, 3), dtype=np.uint8)
         self.plotter = Plotter3d(self.canvas_3d.shape[:2])
@@ -48,7 +48,8 @@ class HumanPoseEstimation3d(InferenceManager):
         self.t = np.array(extrinsics['t'], dtype=np.float32)
 
         self.output_dir_path = args.output_dir
-        self.save_results = self.create_output_file()
+        self.save_results, out_hdf5_filepath = self.create_output_file()
+        self.create_videos_file(args.save_video, out_hdf5_filepath)
         self.i_frame = 0
         self.frame_provider = InputReader(args.input)
         self.base_height = args.height_size
@@ -57,6 +58,7 @@ class HumanPoseEstimation3d(InferenceManager):
 
         self.presenter = monitors.Presenter(args.utilization_monitors, 0)
         self.running = False
+
 
     def run(self):
         self.start()
@@ -78,16 +80,32 @@ class HumanPoseEstimation3d(InferenceManager):
                     self.f_res.close()
                 break
 
+    def create_videos_file(self, save_video, out_hdf5_filepath):
+        if save_video:
+            if self.save_results:
+                out_vid_filepath = out_hdf5_filepath[:-5]+'.avi'
+            else:
+                os.mkdir('out_videos')
+                out_vid_filepath = os.path.join('out_videos', 'out_video.avi')
+            self.save_video = True
+            self.vid_writer = cv2.VideoWriter(out_vid_filepath, cv2.VideoWriter_fourcc('M','J','P','G'), 20.0, (600, 400))
+            out_vid_dirpath, out_vid_filename = os.path.dirname(out_vid_filepath), os.path.basename(out_vid_filepath)[:-4]
+            self.vid_frames_dir = os.path.join(out_vid_dirpath, out_vid_filename)
+            os.mkdir(self.vid_frames_dir)
+        else:
+            self.save_video = False
+            self.vid_writer = []
+
     def create_output_file(self):
         if not self.output_dir_path:
-            return False
+            return False, ''
         else:
             if not os.path.exists(self.output_dir_path):
                 try:
                     os.mkdir(self.output_dir_path)
                 except:
                     print('Could not create directory {}'.format(self.output_dir_path))
-                    return False
+                    return False, ''
             in_filepath = args.input[0]
             in_filename = in_filepath[in_filepath.rfind(os.path.sep) + 1:]
             if in_filename.rfind('.') is not -1:
@@ -98,37 +116,50 @@ class HumanPoseEstimation3d(InferenceManager):
             while os.path.exists('{}_{}.hdf5'.format(temp_path, i)):
                 i += 1
             out_res_filepath = '{}_{}.hdf5'.format(temp_path, i)
+            out_res_filepath_light = '{}_{}_light.hdf5'.format(temp_path, i)
             self.f_res = h5py.File(out_res_filepath, 'w')
+            self.f_res_light = h5py.File(out_res_filepath_light, 'w')
             res_3d_coords = self.f_res.create_group("3d_coords")
             res_3d_coords.create_group("x")
             res_3d_coords.create_group("y")
             res_3d_coords.create_group("z")
             self.f_res.create_group("kpt_heatmaps")
             self.f_res.create_group("kpt_pairwise_rel")
+            res_3d_coords_l = self.f_res_light.create_group("3d_coords")
+            res_3d_coords_l.create_group("x")
+            res_3d_coords_l.create_group("y")
+            res_3d_coords_l.create_group("z")
             print("Saving results in {}".format(out_res_filepath))
-            return True
+            return True, out_res_filepath
 
     def post_process(self, outputs, frame, index, input):
         result = (outputs['features'][0], outputs['heatmaps'][0], outputs['pafs'][0])
         frame = input['original_frame']
         input_scale = self.base_height / frame.shape[0]
         poses_3d, poses_2d = parse_poses(result, input_scale, self.stride, self.fx, self.frame_provider.is_video)
+        print('IN POST PROCESS : len_poses_3d : {}'.format(len(poses_3d)))
         if self.save_results and len(poses_3d) > 0:
             self.f_res.require_group("3d_coords/x").create_dataset(str(self.i_frame), data=poses_3d[:, 0::4])
             self.f_res.require_group("3d_coords/y").create_dataset(str(self.i_frame), data=poses_3d[:, 1::4])
             self.f_res.require_group("3d_coords/z").create_dataset(str(self.i_frame), data=poses_3d[:, 2::4])
             self.f_res.require_group("kpt_heatmaps").create_dataset(str(self.i_frame), data=outputs['heatmaps'][0])
             self.f_res.require_group("kpt_pairwise_rel").create_dataset(str(self.i_frame), data=outputs['pafs'][0])
+            self.f_res_light.require_group("3d_coords/x").create_dataset(str(self.i_frame), data=poses_3d[:, 0::4])
+            self.f_res_light.require_group("3d_coords/y").create_dataset(str(self.i_frame), data=poses_3d[:, 1::4])
+            self.f_res_light.require_group("3d_coords/z").create_dataset(str(self.i_frame), data=poses_3d[:, 2::4])
             self.i_frame += 1
         self.presenter.drawGraphs(frame)
         draw_poses(frame, poses_2d)
         return input
 
     def displayCallback(self, frame, output):
-        print(self.get_performances())
+        print('Frame {} : {}'.format(self.i_frame, self.get_performances()))
         cv2.namedWindow('image', cv2.WINDOW_NORMAL)
         frame_s = cv2.resize(frame, (600, 400))
         cv2.imshow('image', frame_s)
+        if self.save_video:
+            self.vid_writer.write(frame_s)
+            cv2.imwrite(os.path.join(self.vid_frames_dir, '{}.png'.format(str(self.i_frame))), frame_s)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             if self.save_results:
                 self.f_res.close()
@@ -170,7 +201,8 @@ if __name__ == '__main__':
     args.add_argument('--no_show', help='Optional. Do not display output.', action='store_true')
     args.add_argument("-u", "--utilization_monitors", default='', type=str,
                       help="Optional. List of monitors to show initially.")
-    args.add_argument('--output_dir', help='Optional. Path to directory to save results.', default='')
+    args.add_argument('--output_dir', help='Optional. Path to directory to save results.', type=str, default='')
+    args.add_argument('--save_video', help='Optional. If save the output video', default='')
     args = parser.parse_args()
 
     if args.input == '':
