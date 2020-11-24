@@ -34,7 +34,7 @@ import monitors
 class HumanPoseEstimation3d(InferenceManager):
     def __init__(self, args):
         self.perf_monitor = PerfMonitor(sinks=[self.displayCallback])
-        InferenceManager.__init__(self, args.model, args.device, 0, 0, sinks=[self.perf_monitor])
+        InferenceManager.__init__(self, args.model, args.device, 6, 0, sinks=[self.perf_monitor])
         #self.canvas_3d = np.zeros((200, 300, 3), dtype=np.uint8)
         self.canvas_3d = np.zeros((720, 1280, 3), dtype=np.uint8)
         self.plotter = Plotter3d(self.canvas_3d.shape[:2])
@@ -55,6 +55,7 @@ class HumanPoseEstimation3d(InferenceManager):
         self.base_height = args.height_size
         self.fx = args.fx
         self.stride = 8
+        self.t_start = cv2.getTickCount() / cv2.getTickFrequency()
 
         self.presenter = monitors.Presenter(args.utilization_monitors, 0)
         self.running = False
@@ -82,7 +83,7 @@ class HumanPoseEstimation3d(InferenceManager):
 
     def create_videos_file(self, save_video, out_hdf5_filepath):
         if save_video:
-            if self.save_results:
+            if self.save_results:q
                 out_vid_filepath = out_hdf5_filepath[:-5]+'.avi'
             else:
                 os.mkdir('out_videos')
@@ -125,10 +126,12 @@ class HumanPoseEstimation3d(InferenceManager):
             res_3d_coords.create_group("z")
             self.f_res.create_group("kpt_heatmaps")
             self.f_res.create_group("kpt_pairwise_rel")
+            self.f_res.create_group("time")
             res_3d_coords_l = self.f_res_light.create_group("3d_coords")
             res_3d_coords_l.create_group("x")
             res_3d_coords_l.create_group("y")
             res_3d_coords_l.create_group("z")
+            self.f_res_light.create_group("time")
             print("Saving results in {}".format(out_res_filepath))
             return True, out_res_filepath
 
@@ -139,11 +142,13 @@ class HumanPoseEstimation3d(InferenceManager):
         poses_3d, poses_2d = parse_poses(result, input_scale, self.stride, self.fx, self.frame_provider.is_video)
         print('IN POST PROCESS : len_poses_3d : {}'.format(len(poses_3d)))
         if self.save_results and len(poses_3d) > 0:
+            time_frame = cv2.getTickCount() / cv2.getTickFrequency() - self.t_start
             self.f_res.require_group("3d_coords/x").create_dataset(str(self.i_frame), data=poses_3d[:, 0::4])
             self.f_res.require_group("3d_coords/y").create_dataset(str(self.i_frame), data=poses_3d[:, 1::4])
             self.f_res.require_group("3d_coords/z").create_dataset(str(self.i_frame), data=poses_3d[:, 2::4])
             self.f_res.require_group("kpt_heatmaps").create_dataset(str(self.i_frame), data=outputs['heatmaps'][0])
             self.f_res.require_group("kpt_pairwise_rel").create_dataset(str(self.i_frame), data=outputs['pafs'][0])
+            self.f_res.require_group("time").create_dataset(str(self.i_frame), data=time_frame)
             self.f_res_light.require_group("3d_coords/x").create_dataset(str(self.i_frame), data=poses_3d[:, 0::4])
             self.f_res_light.require_group("3d_coords/y").create_dataset(str(self.i_frame), data=poses_3d[:, 1::4])
             self.f_res_light.require_group("3d_coords/z").create_dataset(str(self.i_frame), data=poses_3d[:, 2::4])
@@ -202,6 +207,8 @@ if __name__ == '__main__':
     args.add_argument("-u", "--utilization_monitors", default='', type=str,
                       help="Optional. List of monitors to show initially.")
     args.add_argument('--output_dir', help='Optional. Path to directory to save results.', type=str, default='')
+  #  args.add_argument('--save_heatmaps', help='Optional. If True and output_dir is set, will save heatmaps in addition'
+  #                                            ' to the 3D coordinates', type=bool, default=False)
     args.add_argument('--save_video', help='Optional. If save the output video', default='')
     args = parser.parse_args()
 
@@ -212,6 +219,3 @@ if __name__ == '__main__':
     human_pose_estimation_3d.run()
     t_elapsed = (cv2.getTickCount() - e_start) / cv2.getTickFrequency()
     print('time elapsed : {}'.format(t_elapsed))
-   
-   
-   
